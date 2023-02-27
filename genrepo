@@ -1,0 +1,12 @@
+#!/bin/bash
+
+echo "GenRepo v1.0 for IPA2DEB By Alex Free"
+set -e
+if [ "$#" -ne 1 ]; then
+    echo "Error: 1 argument is required for genrepo"
+    exit 1
+fi
+
+cd "$1"
+dpkg-scanpackages -m . /dev/null >Packages
+gzip Packages

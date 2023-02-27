@@ -1,0 +1,16 @@
+#!/bin/bash
+
+ver=1.0
+set -e
+
+cd "$(dirname "$0")"
+rm -rf ipa2deb-$ver*
+
+if [ "$1" == "--clean" ]; then
+    exit 0
+fi
+
+mkdir ipa2deb-$ver
+cp -r ipa2deb genrepo readme.md unlicense.txt ipa2deb-$ver
+chmod -R 777 ipa2deb-$ver
+zip -r ipa2deb-$ver.zip ipa2deb-$ver

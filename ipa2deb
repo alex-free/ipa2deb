@@ -1,0 +1,154 @@
+#!/bin/bash
+
+if [ "${BASH_VERSINFO}" -lt 4 ]; then
+    echo "Error: This Bash version is too old to run ipa2deb. Please install and or upgrade to a newer version of Bash."
+    exit 1
+fi
+
+echo -e "IPA2DEB v1.0 by Alex Free\n"
+
+# When this script exits, automatically delete the temp directory.
+cleanup() 
+{ 
+    if [[ -e "$tmp" ]]; then  
+        rm -r "$tmp"
+    fi
+}
+trap cleanup EXIT
+
+convert() 
+{
+    rm -rf "$tmp"
+    # Put temp directory in /var/tmp
+    tmp=$(mktemp -d /var/tmp/ipa2deb.XXX)
+
+    unzip -q "$1" -d "$tmp"/extracted  &> /dev/null
+    if [[ $? != 0 ]] ; then
+        echo "Not converting specified ipa file: "$1" as it could not be extracted, it may be corrupted\n" >> "$2"/ipa2deb-extraction-failure-log.txt
+        return
+    fi
+    chmod -R 777 "$tmp"/extracted
+    app_dirname=$(ls "$tmp"/extracted/Payload)
+    return=$(pwd)
+    cd "$tmp"/extracted/Payload/"$app_dirname"
+    app_id=$(python3 -c "import plistlib; print(plistlib.load(open('Info.plist', 'rb'))['CFBundleIdentifier'])" 2>/dev/null)
+    app_ver=$(python3 -c "import plistlib; print(plistlib.load(open('Info.plist', 'rb'))['CFBundleVersion'])" 2>/dev/null)
+    app_name=$(python3 -c "import plistlib; print(plistlib.load(open('Info.plist', 'rb'))['CFBundleDisplayName'])" 2>/dev/null)
+    app_min_os_ver_required=$(python3 -c "import plistlib; print(plistlib.load(open('Info.plist', 'rb'))['MinimumOSVersion'])" 2>/dev/null)
+    cd "$return"
+
+    if [ -z "$app_ver" ]; then
+        echo "Error: The ipa file: "$1" is missing the "CFBundleVersion" key in the "Info.plist" file and  can not be converted" >>  "$2"/ipa2deb-conversion-failure-log.txt
+        return
+    fi
+    if [ -z "$app_name" ]; then
+        cd "$tmp"/extracted/Payload/"$app_dirname"
+        app_name=$(python3 -c "import plistlib; print(plistlib.load(open('Info.plist', 'rb'))['CFBundleName'])" 2>/dev/null)
+        cd "$return"
+        if [ -z "$app_name" ]; then
+            echo "Error: The ipa file: "$1" is missing the "CFBundleDisplayName"/"CFBundleName" key in the "Info.plist" file and can not be converted" >>  "$2"/ipa2deb-conversion-failure-log.txt
+            return
+        fi
+    fi
+
+    app_id_first_char=$(echo "$app_id" | cut -c1-1)
+    if [[ "$app_id_first_char" =~ [^a-zA-Z0-9] ]]; then
+        app_id="1"$app_id""
+    fi
+
+    if [ -z "$app_min_os_ver_required" ]; then
+        echo "Error: The ipa file: "$1" is missing the "MinimumOSVersion" key in the "Info.plist" file and can not be converted" >>  "$2"/ipa2deb-conversion-failure-log.txt
+        return
+    fi
+
+    rm -rf "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"
+    mkdir -p "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/Applications
+    mkdir -p "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/DEBIAN 
+    mv "$tmp"/extracted/Payload/"$app_dirname" "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/Applications/"$app_dirname"
+    rm -rf "$tmp"/extracted
+    echo -e "Package: "$app_id"\nName: "$app_name" v"$app_ver" (iOS "$app_min_os_ver_required")\nDepends: firmware (>= "$app_min_os_ver_required"), uikittools, appsync\nVersion: "$app_ver"\nArchitecture: iphoneos-arm\nDescription: The decrypted ipa file: "$1" converted to .deb automatically by https://alex-free.github.io/ipa2deb .\nHomepage: "$4"\nDepiction: "$4"\nMaintainer: "$3"\nAuthor: "$3"\nSponsor: "$3"\nSection: AppStore Apps" > "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/DEBIAN/control
+	echo -e "#!/bin/bash\nsu - mobile -c uicache" > "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/DEBIAN/postinst
+    chmod 775 "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/DEBIAN/postinst
+	echo -e "#!/bin/bash\nsu - mobile -c uicache" > "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/DEBIAN/postrm
+    chmod 775 "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"/DEBIAN/postrm
+    dpkg-deb -Zgzip -b "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required"
+    cp --backup=t "$tmp"/"$app_id"-"$app_ver"-iOS-"$app_min_os_ver_required".deb "$2"
+}
+
+if ! command -v dpkg-deb &> /dev/null; then
+    if command -v dnf &> /dev/null; then
+        sudo dnf install dpkg-dev
+    else
+        echo "Error: dpkg-deb can not be found, please install it."
+        exit 1
+    fi
+fi
+
+if ! command -v python3 &> /dev/null; then
+    if command -v dnf &> /dev/null; then
+        sudo dnf install python3
+    elif command -v apt &> /dev/null; then
+        sudo apt install python3
+    else
+        echo "Error: dpkg-deb can not be found, please install it."
+        exit 1
+    fi
+fi
+
+if [ "$#" -ne 4 ]; then
+    echo -e "Error: ipa2deb requires 4 arguments\nUsage:\nipa2deb.sh <ipa file or a directory of ipa files> <output directory> <name and email> <website>\nExample:\nipa2deb example.ipa output \"your name <youremail@youremailprovider>\" "http://yourwebsite.com""
+    exit 1
+fi
+
+if [ ! -e "/var/tmp" ]; then
+    mkdir /var/tmp
+fi
+
+output_dir=$(realpath "$2")
+mkdir -p "$output_dir"
+rm -f "$output_dir"/ipa2deb-extraction-failure-log.txt
+rm -f "$output_dir"ipa2deb-duplicate-packages-log.txt
+rm -f "$output_dir"/ipa2deb-conversion-failure-log.txt
+
+if [ -d "$1" ]; then
+    cd "$1"
+    total_ipas=`ls -1 *.ipa 2>/dev/null | wc -l`
+    if [ "$total_ipas" != 0 ]; then
+        current_ipa=1
+        for f in *.ipa; do
+            echo "Proccessing ipa file: "$current_ipa"/"$total_ipas""
+            convert "$f" "$output_dir" "$3" "$4"
+            current_ipa=$(($current_ipa + 1))        
+        done
+    else
+        echo "Error: There are no .ipa files in "$1""
+    fi
+elif [ -f "$1" ]; then
+    convert "$1" "$output_dir" "$3" "$4"
+else
+    echo "Error, "$1" is not a file or directory that exists"
+    exit 1
+fi
+
+count_possible_duplicates=`ls -1 "$output_dir"/*.deb.~*~ 2>/dev/null | wc -l`
+if [ "$count_possible_duplicates" != 0 ]; then
+    if [ -d "$output_dir"/duplicate-packages ]; then
+        rm -rf "$output_dir"/duplicate-packages
+    fi
+    mkdir "$output_dir"/duplicate-packages
+    echo -e "\nNotice: "$count_possible_duplicates" duplicate packages were generated, please review the log file at:\n"$2"/ipa2deb-duplicate-packages-log.txt\n\nOn the next run of ipa2deb if more duplicate packages are created and the output directory remains: "$2" the previous "$2"/duplicate-packages directory will be deleted and reset to a new state!\n"
+
+    for f in "$output_dir"/*.deb.~*~; do
+        mv -v "$f" "$output_dir"/duplicate-packages/ > "$output_dir"/ipa2deb-duplicate-packages-log.txt
+    done
+fi
+
+if [ -e "$output_dir"/ipa2deb-extraction-failure-log.txt ]; then
+    corrupted_packages_count=$(cat "$output_dir"/ipa2deb-extraction-failure-log.txt | wc -l)
+    echo -e "Notice: "$corrupted_packages_count" ipa files were not extracted successfully, and were not converted to deb. Please review the log file at:\n"$2"/ipa2deb-extraction-failure-log.txt\n"
+fi
+
+if [ -e "$output_dir"/ipa2deb-conversion-failure-log.txt ]; then
+    failed_conversion_packages_count=$(cat "$output_dir"/ipa2deb-conversion-failure-log.txt | wc -l)
+    echo -e "Notice: "$failed_conversion_packages_count" ipa files were not converted successfully due to missing info usually found in the "Info.plist" file of the app. Please review the log file at:\n"$output_dir"/ipa2deb-conversion-failure-log.txt\n"
+fi
